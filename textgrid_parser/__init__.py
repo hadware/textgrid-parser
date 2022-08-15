@@ -7,7 +7,7 @@ from sly import Lexer, Parser
 
 # maybe add ordering using start/end
 from sly.yacc import YaccProduction
-from sly.lex import Token
+from sly.lex import Token, LexError
 
 
 class TextgridConsistencyError(ValueError):
@@ -40,7 +40,7 @@ class ParsingError(Exception):
 class Interval:
     start: float
     end: float
-    mark: str
+    text: str
 
 
 @dataclass
@@ -81,7 +81,7 @@ class TextGridLexer(Lexer):
     }
     literals = {"=", ":", "[", "]", "<", ">"}
 
-    ignore = '[ \t]+'
+    ignore = ' \t'
 
     @_(r'\n+')
     def ignore_newline(self, t):
@@ -97,21 +97,29 @@ class TextGridLexer(Lexer):
         t.value = int(t.value)
         return t
 
-    @_(r'".*"')
-    def STRING_LITERAL(self, t):
-        t.value = t.value.strip("")
-        return t
-
     INTERVAL_TIER = '"IntervalTier"'
     TEXT_TIER = '"TextTier"'
+
+    @_(r'".*"')
+    def STRING_LITERAL(self, t):
+        t.value = t.value.strip('"')
+        return t
+
     TIERS_EXIST = r"tiers\?"
-    IDENTIFIER = r"[a-zA-Z ?]+"
-    IDENTIFIER["size"] = "SIZE"
-    IDENTIFIER["intervals"] = "INTERVALS"
-    IDENTIFIER["points"] = "POINTS"
-    IDENTIFIER["class"] = "CLASS"
-    IDENTIFIER["item"] = "ITEM"
-    #ITEM = r"ITEM"
+    ITEM = r"item"
+    SIZE = r"size"
+    INTERVALS = r"intervals"
+    POINTS = r"points"
+    CLASS = r"class"
+
+    @_(r"[a-zA-Z ]+")
+    def IDENTIFIER(self, t):
+        t.value = t.value.strip()
+        return t
+
+    def error(self, t):
+        raise LexError(f"Unexpected character {t.value[0]!r} at index {self.index}, line {self.lineno}",
+                       t.value, self.index)
 
 
 class TextGridParser(Parser):
@@ -137,7 +145,7 @@ class TextGridParser(Parser):
         else:
             ValueError("Unsupported type for tg_file")
 
-        self.parse(self.lexer.tokenize(tg_text))  # noqa
+        return self.parse(self.lexer.tokenize(tg_text))  # noqa
 
     @_("{ tg_property } tiers")
     def textgrid(self, p: YaccProduction):
@@ -153,32 +161,37 @@ class TextGridParser(Parser):
     def tier(self, p: YaccProduction) -> Union[Tier]:
         return p[0]
 
-    @_('item_header CLASS "=" INTERVAL_TIER { tg_property } { interval }')
+    @_('item_header CLASS "=" INTERVAL_TIER tier_header { interval }')
     def interval_tier(self, p: YaccProduction) -> Tier:
-        tier_properties = dict(p.tg_property)
+        tier_properties = dict(p.tier_header)
         return IntervalTier(tier_properties["name"], p.interval)
 
-    @_('item_header tg_property tg_property tg_property')
+    @_('intervals_header tg_property tg_property tg_property')
     def interval(self, p: YaccProduction) -> Interval:
         point_properties = dict([p[1], p[2], p[3]])
-        return Interval(point_properties["start"],
-                        point_properties["end"],
-                        point_properties["mark"])
+        return Interval(point_properties["xmin"],
+                        point_properties["xmax"],
+                        point_properties["text"])
 
-    @_('item_header CLASS "=" TEXT_TIER { tg_property } { point }')
+    @_('item_header CLASS "=" TEXT_TIER tier_header { point }')
     def text_tier(self, p: YaccProduction) -> Tier:
         tier_properties = dict(p.tg_property)
         return TextTier(tier_properties["name"], p.interval)
 
-    @_('item_header tg_property tg_property')
+    @_('points_header tg_property tg_property')
     def point(self, p: YaccProduction) -> Point:
         point_properties = dict([p[1], p[2]])
         return Point(point_properties["number"],
                      point_properties["mark"])
 
+    @_('tg_property tg_property tg_property size_property')
+    def tier_header(self, p: YaccProduction) -> Dict[str, Any]:
+        return dict(p[i] for i in range(4))
+
     @_('IDENTIFIER "=" STRING_LITERAL',
        'IDENTIFIER "=" INT_LITERAL',
-       'IDENTIFIER "=" FLOAT_LITERAL')
+       'IDENTIFIER "=" FLOAT_LITERAL',
+       'SIZE "=" INT_LITERAL')
     def tg_property(self, p: YaccProduction):
         return p[0], p[2]
 
@@ -188,13 +201,19 @@ class TextGridParser(Parser):
 
     @_('INTERVALS ":" SIZE "=" INT_LITERAL',
        'POINTS ":" SIZE "=" INT_LITERAL')
-    def tg_property(self, p: YaccProduction):
+    def size_property(self, p: YaccProduction):
         return p[2], p[4]
 
-    @_('ITEM "[" INT_LITERAL "]" ":"',
-       'INTERVALS "[" INT_LITERAL "]" ":"',
-       'POINTS "[" INT_LITERAL "]" ":"',)
+    @_('ITEM "[" INT_LITERAL "]" ":"')
     def item_header(self, p: YaccProduction) -> Tuple[str, int]:
+        return p[0], p.INT_LITERAL
+
+    @_('INTERVALS "[" INT_LITERAL "]" ":"')
+    def intervals_header(self, p: YaccProduction) -> Tuple[str, int]:
+        return p[0], p.INT_LITERAL
+
+    @_('POINTS "[" INT_LITERAL "]" ":"', )
+    def points_header(self, p: YaccProduction) -> Tuple[str, int]:
         return p[0], p.INT_LITERAL
 
     def error(self, token):
