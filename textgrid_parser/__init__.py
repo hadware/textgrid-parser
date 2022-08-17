@@ -1,7 +1,7 @@
 from dataclasses import dataclass
-from io import StringIO
+from io import StringIO, TextIOBase
 from pathlib import Path
-from typing import List, Union, Dict, Any, Tuple, Optional
+from typing import List, Union, Dict, Any, Tuple, Optional, Literal, Set
 
 from sly import Lexer, Parser
 
@@ -122,8 +122,33 @@ class TextGridLexer(Lexer):
                        t.value, self.index)
 
 
-class TextGridParser(Parser):
-    debugfile = 'parser.out'
+class MinimalTextGridLexer(TextGridLexer):
+    tokens = {
+        "FLOAT_LITERAL",
+        "INT_LITERAL",
+        "STRING_LITERAL",
+        "IDENTIFIER",
+        "INTERVAL_TIER",
+        "TEXT_TIER",
+    }
+
+
+class BaseTextGridParser(Parser):
+    lexer: TextGridLexer
+    tokens: Set[str]
+
+    start = 'textgrid'
+    _check_consistency: bool
+
+    def parser_textgrid(self, tg_text: str, check_consistency: bool) -> List[Tier]:
+        self._check_consistency = check_consistency
+
+        return self.parse(self.lexer.tokenize(tg_text))
+
+    # TODO: here add various checking functions
+
+
+class FullTextGridParser(Parser):
     tokens = TextGridLexer.tokens
     lexer = TextGridLexer()
 
@@ -158,11 +183,11 @@ class TextGridParser(Parser):
 
     @_('interval_tier',
        'text_tier')
-    def tier(self, p: YaccProduction) -> Union[Tier]:
+    def tier(self, p: YaccProduction) -> Tier:
         return p[0]
 
     @_('item_header CLASS "=" INTERVAL_TIER tier_header { interval }')
-    def interval_tier(self, p: YaccProduction) -> Tier:
+    def interval_tier(self, p: YaccProduction) -> IntervalTier:
         tier_properties = dict(p.tier_header)
         return IntervalTier(tier_properties["name"], p.interval)
 
@@ -174,7 +199,7 @@ class TextGridParser(Parser):
                         point_properties["text"])
 
     @_('item_header CLASS "=" TEXT_TIER tier_header { point }')
-    def text_tier(self, p: YaccProduction) -> Tier:
+    def text_tier(self, p: YaccProduction) -> TextTier:
         tier_properties = dict(p.tg_property)
         return TextTier(tier_properties["name"], p.interval)
 
@@ -195,6 +220,7 @@ class TextGridParser(Parser):
     def tg_property(self, p: YaccProduction):
         return p[0], p[2]
 
+    # todo : add support for no tiers in textgrid
     @_('TIERS_EXIST "<" IDENTIFIER ">"')
     def tg_property(self, p: YaccProduction) -> Tuple[str, bool]:
         return "has_tiers", True
@@ -218,3 +244,80 @@ class TextGridParser(Parser):
 
     def error(self, token):
         raise ParsingError(token)
+
+
+class MinimalTextGridParser(BaseTextGridParser):
+    tokens = MinimalTextGridLexer.tokens
+    lexer = MinimalTextGridLexer()
+
+    @_("tg_header tiers")
+    def textgrid(self, p: YaccProduction):
+        # TODO: consistency checks
+        return p.tiers
+
+    @_('tg_property tg_property FLOAT_LITERAL FLOAT_LITERAL "<" IDENTIFIER ">" INT_LITERAL')
+    def tg_header(self, p: YaccProduction) -> Dict[str, Any]:
+        return {
+            "xmin": p[2],
+            "xmax": p[3],
+            "hast_tiers": p[5] == "exists",
+            "size": p[7]
+        }
+
+    @_('IDENTIFIER "=" STRING_LITERAL')
+    def tg_property(self, p: YaccProduction):
+        return p[0], p[2]
+
+    @_('{ tier }')
+    def tiers(self, p: YaccProduction) -> List[Tier]:
+        return p[4]
+
+    @_('interval_tier',
+       'text_tier')
+    def tier(self, p: YaccProduction) -> Tier:
+        return p[0]
+
+    @_('INTERVAL_TIER STRING_LITERAL FLOAT_LITERAL FLOAT_LITERAL { interval }')
+    def interval_tier(self, p: YaccProduction) -> IntervalTier:
+        return IntervalTier(p[1], p.interval)
+
+    @_('INT_LITERAL FLOAT_LITERAL FLOAT_LITERAL STRING_LITERAL')
+    def interval(self, p: YaccProduction) -> Interval:
+        return Interval(p[1],
+                        p[2],
+                        p[3])
+
+    @_('TEXT_TIER STRING_LITERAL FLOAT_LITERAL FLOAT_LITERAL { interval }')
+    def text_tier(self, p: YaccProduction) -> TextTier:
+        tier_properties = dict(p.tg_property)
+        return TextTier(tier_properties["name"], p.interval)
+
+    @_('INT_LITERAL FLOAT_LITERAL STRING_LITERAL')
+    def point(self, p: YaccProduction) -> Point:
+        return Point(p[1],
+                     p[2])
+
+
+def parse_textgrid(textgrid: Union[str, Path, TextIOBase],
+                   check_consistency: bool = True,
+                   textgrid_format: Literal["full", "minimal"] = "full"):
+    if isinstance(textgrid, TextIOBase):
+        tg_str = textgrid.read()
+    else:
+        if isinstance(textgrid, str):
+            tg_path = Path(textgrid)
+        elif isinstance(textgrid, Path):
+            tg_path = textgrid
+        else:
+            raise ValueError("Unsupported argument type for textgrid")
+
+        with open(tg_path) as tg_file:
+            tg_str = tg_file.read()
+
+    assert textgrid_format in {"full", "minimal"}
+    if textgrid_format == "full":
+        tg_parser = FullTextGridParser()
+    else:
+        tg_parser = MinimalTextGridParser()
+
+    return tg_parser.parser_textgrid(tg_str, check_consistency)
