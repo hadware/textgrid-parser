@@ -9,6 +9,22 @@ from sly import Lexer, Parser
 from sly.yacc import YaccProduction
 from sly.lex import Token, LexError
 
+from typing_extensions import TypedDict
+
+
+class TextGridProperties(TypedDict):
+    size: int
+    has_tiers: bool
+    xmin: float
+    xmax: float
+
+
+class TierProperties(TypedDict):
+    name: str
+    size: int
+    xmin: float
+    xmax: float
+
 
 class TextgridConsistencyError(ValueError):
     def __init__(self, error, ):
@@ -53,15 +69,39 @@ class Point:
 class Tier:
     name: str
 
+    @property
+    def xmin(self):
+        raise NotImplemented()
+
+    @property
+    def xmax(self):
+        raise NotImplemented()
+
 
 @dataclass
 class IntervalTier(Tier):
     intervals: List[Interval]
 
+    @property
+    def xmin(self):
+        return min(interval.start for interval in self.intervals)
+
+    @property
+    def xmax(self):
+        raise max(interval.end for interval in self.intervals)
+
 
 @dataclass
 class TextTier(Tier):
-    intervals: List[Point]
+    points: List[Point]
+
+    @property
+    def xmin(self):
+        return min(point.number for point in self.points)
+
+    @property
+    def xmax(self):
+        raise max(point.number for point in self.points)
 
 
 class TextGridLexer(Lexer):
@@ -145,32 +185,40 @@ class BaseTextGridParser(Parser):
 
         return self.parse(self.lexer.tokenize(tg_text))
 
-    # TODO: here add various checking functions
+    def check_tg_consistency(self, tiers: List[Tier], tg_prop: TextGridProperties):
+        if not tg_prop["has_tiers"] and len(tiers) != 0:
+            pass  # TODO
+
+        if tg_prop["size"] != len(tiers):
+            raise TextgridConsistencyError(
+                f"Inconsistent number of tiers : {tg_prop['size']} declared in header, "
+                f"found {len(tiers)} in file.")
+
+        for tier in tiers:
+            if tier.xmin < tg_prop["xmin"]:
+                raise TextgridConsistencyError("")  # TODO
+            if tier.xmax > tg_prop["xmax"]:
+                raise TextgridConsistencyError("")  # TODO
+
+    def check_tier_consistency(self, tier: Tier, tier_prop: TierProperties):
+        if isinstance(tier, IntervalTier):
+            items = tier.intervals
+        else:
+            items = tier.points  # noqa
+
+        if len(items) != tier_prop:
+            raise TextgridConsistencyError("")  # TODO
+
+        if tier.xmin < tier_prop["xmin"]:
+            raise TextgridConsistencyError("")  # TODO
+
+        if tier.xmax > tier_prop["xmax"]:
+            raise TextgridConsistencyError("")  # TODO
 
 
-class FullTextGridParser(Parser):
+class FullTextGridParser(BaseTextGridParser):
     tokens = TextGridLexer.tokens
     lexer = TextGridLexer()
-
-    start = 'textgrid'
-    _check_consistency: bool
-
-    def parse_textgrid(self, tg_file: Union[str, StringIO, Path],
-                       check_consistency: bool = True) -> List[Tier]:
-
-        self._check_consistency = check_consistency
-
-        if isinstance(tg_file, StringIO):
-            tg_text = tg_file.read()
-        elif isinstance(tg_file, Path):
-            with open(tg_file) as tg:
-                tg_text = tg.read()
-        elif isinstance(tg_file, str):
-            tg_text = tg_file
-        else:
-            ValueError("Unsupported type for tg_file")
-
-        return self.parse(self.lexer.tokenize(tg_text))  # noqa
 
     @_("{ tg_property } tiers")
     def textgrid(self, p: YaccProduction):
