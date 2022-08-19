@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from textgrid_parser import parse_textgrid, IntervalTier, TextTier
+import pytest
+
+from textgrid_parser import parse_textgrid, IntervalTier, TextTier, TextgridConsistencyError
 
 data_path = Path(__file__).parent / "data"
 full_tg_path = data_path / "full.TextGrid"
@@ -63,3 +65,18 @@ def test_parse_minimal():
                            check_consistency=True,
                            textgrid_format="minimal")
     assert len(tiers) == 3
+
+
+@pytest.mark.parametrize(["filename", "error_str"], [
+    ("full_wrong_tiers_count", "Inconsistent number of tiers :"),
+    ("full_wrong_xmin_tg", "xmin for tier sentence is inconsistent with textgrid xmin"),
+    ("full_wrong_xmax_tg", "xmax for tier sentence is inconsistent with textgrid xmax"),
+    ("full_wrong_size_in_tier", "Inconsistent number of items in tier phonemes :"),
+    ("full_wrong_xmin_tier", "xmin for tier phonemes is inconsistent with items xmin"),
+    ("full_wrong_xmax_tier", "xmax for tier phonemes is inconsistent with items xmax"),
+])
+def test_check_consistency(filename, error_str):
+    with pytest.raises(TextgridConsistencyError, match=f"{error_str}.*"):
+        parse_textgrid(data_path / f"{filename}.TextGrid",
+                       check_consistency=True,
+                       textgrid_format="full")

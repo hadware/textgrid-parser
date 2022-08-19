@@ -25,8 +25,12 @@ class TierProperties(TypedDict):
 
 
 class TextgridConsistencyError(ValueError):
-    def __init__(self, error, ):
-        pass
+    def __init__(self, error: str, *args):
+        super().__init__(*args)
+        self.error = error
+
+    def __str__(self):
+        return self.error + " To deactivate this error, set 'check_consistency' to False"
 
 
 class ParsingError(Exception):
@@ -82,11 +86,11 @@ class IntervalTier(Tier):
 
     @property
     def xmin(self):
-        return min(interval.start for interval in self.intervals)
+        return min(interval.start for interval in self.intervals) if self.intervals else None
 
     @property
     def xmax(self):
-        return max(interval.end for interval in self.intervals)
+        return max(interval.end for interval in self.intervals) if self.intervals else None
 
 
 @dataclass
@@ -95,11 +99,11 @@ class TextTier(Tier):
 
     @property
     def xmin(self):
-        return min(point.number for point in self.points)
+        return min(point.number for point in self.points) if self.points else None
 
     @property
     def xmax(self):
-        return max(point.number for point in self.points)
+        return max(point.number for point in self.points) if self.points else None
 
 
 class TextGridLexer(Lexer):
@@ -195,10 +199,14 @@ class BaseParserMixin:
                 f"found {len(tiers)} in file.")
 
         for tier in tiers:
+            if tier.xmin is None:
+                continue
             if tier.xmin < tg_prop["xmin"]:
-                raise TextgridConsistencyError("")  # TODO
+                raise TextgridConsistencyError(f"xmin for tier {tier.name} is inconsistent with textgrid xmin: "
+                                               f"{tier.xmin} < {tg_prop['xmin']}")
             if tier.xmax > tg_prop["xmax"]:
-                raise TextgridConsistencyError("")  # TODO
+                raise TextgridConsistencyError(f"xmax for tier {tier.name} is inconsistent with textgrid xmax: "
+                                               f"{tier.xmax} < {tg_prop['xmax']}")
 
     def check_tier_consistency(self, tier: Tier, tier_prop: TierProperties):
         if isinstance(tier, IntervalTier):
@@ -206,14 +214,19 @@ class BaseParserMixin:
         else:
             items = tier.points  # noqa
 
-        if len(items) != tier_prop:
-            raise TextgridConsistencyError("")  # TODO
+        if len(items) != tier_prop["size"]:
+            raise TextgridConsistencyError(f"Inconsistent number of items in tier {tier_prop['name']} : "
+                                           f"{tier_prop['size']} declared in tier header, "
+                                           f"found {len(items)} in file.")
 
-        if tier.xmin < tier_prop["xmin"]:
-            raise TextgridConsistencyError("")  # TODO
+        if tier.xmin is not None:
+            if tier.xmin < tier_prop["xmin"]:
+                raise TextgridConsistencyError(f"xmin for tier {tier.name} is inconsistent with items xmin: "
+                                               f"{tier.xmin} < {tier_prop['xmin']}")
 
-        if tier.xmax > tier_prop["xmax"]:
-            raise TextgridConsistencyError("")  # TODO
+            if tier.xmax > tier_prop["xmax"]:
+                raise TextgridConsistencyError(f"xmax for tier {tier.name} is inconsistent with items xmax: "
+                                               f"{tier.xmax} < {tier_prop['xmax']}")
 
 
 class FullTextGridParser(BaseParserMixin, Parser):
@@ -224,7 +237,8 @@ class FullTextGridParser(BaseParserMixin, Parser):
 
     @_("{ tg_property } tiers")
     def textgrid(self, p: YaccProduction):
-        # TODO: consistency checks
+        if self._check_consistency:
+            self.check_tg_consistency(p.tiers, dict(p.tg_property))
         return p.tiers
 
     @_('ITEM "[" "]" ":" { tier }')
@@ -239,7 +253,10 @@ class FullTextGridParser(BaseParserMixin, Parser):
     @_('item_header CLASS "=" INTERVAL_TIER tier_header { interval }')
     def interval_tier(self, p: YaccProduction) -> IntervalTier:
         tier_properties = dict(p.tier_header)
-        return IntervalTier(tier_properties["name"], p.interval)
+        tier = IntervalTier(tier_properties["name"], p.interval)
+        if self._check_consistency:
+            self.check_tier_consistency(tier, tier_properties)
+        return tier
 
     @_('intervals_header tg_property tg_property tg_property')
     def interval(self, p: YaccProduction) -> Interval:
@@ -251,7 +268,10 @@ class FullTextGridParser(BaseParserMixin, Parser):
     @_('item_header CLASS "=" TEXT_TIER tier_header { point }')
     def text_tier(self, p: YaccProduction) -> TextTier:
         tier_properties = dict(p.tier_header)
-        return TextTier(tier_properties["name"], p.point)
+        tier = TextTier(tier_properties["name"], p.point)
+        if self._check_consistency:
+            self.check_tier_consistency(tier, tier_properties)
+        return tier
 
     @_('points_header tg_property tg_property')
     def point(self, p: YaccProduction) -> Point:
@@ -301,7 +321,8 @@ class MinimalTextGridParser(BaseParserMixin, Parser):
 
     @_("tg_header { tier }")
     def textgrid(self, p: YaccProduction):
-        # TODO: consistency checks
+        if self._check_consistency:
+            self.check_tg_consistency(p.tier, p.tg_header)
         return p.tier
 
     @_('tg_property tg_property number number "<" IDENTIFIER ">" INT_LITERAL')
@@ -309,7 +330,7 @@ class MinimalTextGridParser(BaseParserMixin, Parser):
         return {
             "xmin": p[2],
             "xmax": p[3],
-            "hast_tiers": p[5] == "exists",
+            "has_tiers": p[5] == "exists",
             "size": p[7]
         }
 
@@ -324,7 +345,11 @@ class MinimalTextGridParser(BaseParserMixin, Parser):
 
     @_('INTERVAL_TIER STRING_LITERAL number number INT_LITERAL { interval }')
     def interval_tier(self, p: YaccProduction) -> IntervalTier:
-        return IntervalTier(p[1], p.interval)
+        tier_properties = {"name": p.STRING_LITERAL, "size": p.INT_LITERAL, "xmin": p[2], "xmax": p[3]}
+        tier = IntervalTier(p.STRING_LITERAL, p.interval)
+        if self._check_consistency:
+            self.check_tier_consistency(tier, tier_properties)
+        return tier
 
     @_('number number STRING_LITERAL')
     def interval(self, p: YaccProduction) -> Interval:
@@ -332,7 +357,11 @@ class MinimalTextGridParser(BaseParserMixin, Parser):
 
     @_('TEXT_TIER STRING_LITERAL number number INT_LITERAL { point }')
     def text_tier(self, p: YaccProduction) -> TextTier:
-        return TextTier(p.STRING_LITERAL, p.point)
+        tier_properties = {"name": p.STRING_LITERAL, "size": p.INT_LITERAL, "xmin": p[2], "xmax": p[3]}
+        tier = TextTier(p.STRING_LITERAL, p.point)
+        if self._check_consistency:
+            self.check_tier_consistency(tier, tier_properties)
+        return tier
 
     @_('number STRING_LITERAL')
     def point(self, p: YaccProduction) -> Point:
